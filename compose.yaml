@@ -1,0 +1,275 @@
+name: nexusflow
+x-db: &db
+  image: postgres:17-alpine
+  restart: unless-stopped
+  healthcheck:
+    test: [CMD-SHELL, "pg_isready -U postgres -d nexusflow"]
+    interval: 5s
+    timeout: 3s
+    retries: 20
+x-app-env: &app-env
+  NODE_ENV: production
+  APP_ORIGIN: ${APP_ORIGIN:-http://localhost:8080}
+  INTERNAL_TOKEN: ${INTERNAL_TOKEN:?required}
+  REDIS_URL: redis://:${REDIS_PASSWORD:?required}@redis:6379
+  KAFKA_BROKERS: kafka:9092
+  KAFKA_REPLICATION_FACTOR: 1
+  PAYMENT_PROVIDER: ${PAYMENT_PROVIDER:-mock}
+  ALLOW_FAULT_INJECTION: ${ALLOW_FAULT_INJECTION:-false}
+  ALLOW_LIVE_PAYMENTS: ${ALLOW_LIVE_PAYMENTS:-false}
+  SECURE_COOKIES: ${SECURE_COOKIES:-false}
+  ORDER_SERVICE_URL: http://order-worker:4000
+  INVENTORY_SERVICE_URL: http://inventory-worker:4000
+  PAYMENT_SERVICE_URL: http://payment-worker:4000
+  FULFILLMENT_SERVICE_URL: http://fulfillment-worker:4000
+  OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-}
+x-worker: &worker
+  image: nexusflow-worker:local
+  build:
+    context: .
+    target: worker
+  restart: unless-stopped
+  init: true
+  stop_grace_period: 50s
+  healthcheck:
+    test:
+      [
+        CMD,
+        node,
+        -e,
+        "fetch('http://127.0.0.1:4000/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))",
+      ]
+    interval: 10s
+    timeout: 5s
+    retries: 12
+    start_period: 30s
+services:
+  order-db:
+    <<: *db
+    ports: ["127.0.0.1:5433:5432"]
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_DB: nexusflow
+      POSTGRES_PASSWORD: ${DB_ADMIN_PASSWORD:?required}
+      APP_DB_PASSWORD: ${ORDER_DB_PASSWORD:?required}
+    volumes:
+      [
+        order-data:/var/lib/postgresql/data,
+        "./infra/init-db.sh:/docker-entrypoint-initdb.d/01-app.sh:ro",
+      ]
+  inventory-db:
+    <<: *db
+    ports: ["127.0.0.1:5434:5432"]
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_DB: nexusflow
+      POSTGRES_PASSWORD: ${DB_ADMIN_PASSWORD:?required}
+      APP_DB_PASSWORD: ${INVENTORY_DB_PASSWORD:?required}
+    volumes:
+      [
+        inventory-data:/var/lib/postgresql/data,
+        "./infra/init-db.sh:/docker-entrypoint-initdb.d/01-app.sh:ro",
+      ]
+  payment-db:
+    <<: *db
+    ports: ["127.0.0.1:5435:5432"]
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_DB: nexusflow
+      POSTGRES_PASSWORD: ${DB_ADMIN_PASSWORD:?required}
+      APP_DB_PASSWORD: ${PAYMENT_DB_PASSWORD:?required}
+    volumes:
+      [
+        payment-data:/var/lib/postgresql/data,
+        "./infra/init-db.sh:/docker-entrypoint-initdb.d/01-app.sh:ro",
+      ]
+  fulfillment-db:
+    <<: *db
+    ports: ["127.0.0.1:5436:5432"]
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_DB: nexusflow
+      POSTGRES_PASSWORD: ${DB_ADMIN_PASSWORD:?required}
+      APP_DB_PASSWORD: ${FULFILLMENT_DB_PASSWORD:?required}
+    volumes:
+      [
+        fulfillment-data:/var/lib/postgresql/data,
+        "./infra/init-db.sh:/docker-entrypoint-initdb.d/01-app.sh:ro",
+      ]
+  redis:
+    image: redis:7.4-alpine
+    restart: unless-stopped
+    ports: ["127.0.0.1:6379:6379"]
+    environment:
+      REDIS_PASSWORD: ${REDIS_PASSWORD:?required}
+    command:
+      [
+        sh,
+        -c,
+        'exec redis-server --appendonly yes --requirepass "$$REDIS_PASSWORD"',
+      ]
+    volumes: [redis-data:/data]
+    healthcheck:
+      test:
+        [
+          CMD-SHELL,
+          'REDISCLI_AUTH="$$REDIS_PASSWORD" redis-cli ping | grep PONG',
+        ]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+  kafka:
+    image: apache/kafka:4.0.1
+    restart: unless-stopped
+    environment:
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_LISTENERS: PLAINTEXT://:9092,CONTROLLER://:9093
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "false"
+      KAFKA_LOG_DIRS: /var/lib/kafka/data
+      CLUSTER_ID: MkU3OEVBNTcwNTJENDM2Qk
+    volumes: [kafka-data:/var/lib/kafka/data]
+    healthcheck:
+      test:
+        [
+          CMD-SHELL,
+          "/opt/kafka/bin/kafka-topics.sh --bootstrap-server localhost:9092 --list >/dev/null 2>&1",
+        ]
+      interval: 10s
+      timeout: 10s
+      retries: 30
+      start_period: 60s
+  order-worker:
+    <<: *worker
+    ports: ["127.0.0.1:4001:4000"]
+    environment:
+      <<: *app-env
+      SERVICE_ROLE: order
+      DATABASE_URL: postgresql://nexusflow:${ORDER_DB_PASSWORD}@order-db:5432/nexusflow
+    depends_on:
+      order-db: { condition: service_healthy }
+      kafka: { condition: service_healthy }
+      redis: { condition: service_healthy }
+  inventory-worker:
+    <<: *worker
+    ports: ["127.0.0.1:4002:4000"]
+    environment:
+      <<: *app-env
+      SERVICE_ROLE: inventory
+      DATABASE_URL: postgresql://nexusflow:${INVENTORY_DB_PASSWORD}@inventory-db:5432/nexusflow
+    depends_on:
+      inventory-db: { condition: service_healthy }
+      kafka: { condition: service_healthy }
+      redis: { condition: service_healthy }
+  payment-worker:
+    <<: *worker
+    ports: ["127.0.0.1:4003:4000"]
+    environment:
+      <<: *app-env
+      SERVICE_ROLE: payment
+      DATABASE_URL: postgresql://nexusflow:${PAYMENT_DB_PASSWORD}@payment-db:5432/nexusflow
+      STRIPE_SECRET_KEY: ${STRIPE_SECRET_KEY:-}
+      STRIPE_WEBHOOK_SECRET: ${STRIPE_WEBHOOK_SECRET:-}
+    depends_on:
+      payment-db: { condition: service_healthy }
+      kafka: { condition: service_healthy }
+      redis: { condition: service_healthy }
+  fulfillment-worker:
+    <<: *worker
+    ports: ["127.0.0.1:4004:4000"]
+    environment:
+      <<: *app-env
+      SERVICE_ROLE: fulfillment
+      DATABASE_URL: postgresql://nexusflow:${FULFILLMENT_DB_PASSWORD}@fulfillment-db:5432/nexusflow
+    depends_on:
+      fulfillment-db: { condition: service_healthy }
+      kafka: { condition: service_healthy }
+      redis: { condition: service_healthy }
+  web:
+    image: nexusflow-web:local
+    build:
+      context: .
+      target: web
+    restart: unless-stopped
+    init: true
+    environment:
+      <<: *app-env
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:?Run node dashboard/scripts/setup.mjs first}
+      ADMIN_API_TOKEN: ${ADMIN_API_TOKEN:?required}
+      SESSION_SECRET: ${SESSION_SECRET:?required}
+      DATABASE_URL: postgresql://nexusflow:${ORDER_DB_PASSWORD}@order-db:5432/nexusflow
+      REDIS_URL: redis://:${REDIS_PASSWORD:?required}@redis:6379
+      STRIPE_PUBLISHABLE_KEY: ${STRIPE_PUBLISHABLE_KEY:-}
+    depends_on:
+      order-worker: { condition: service_healthy }
+      inventory-worker: { condition: service_healthy }
+      payment-worker: { condition: service_healthy }
+      fulfillment-worker: { condition: service_healthy }
+    healthcheck:
+      test:
+        [
+          CMD,
+          node,
+          -e,
+          "fetch('http://127.0.0.1:3000/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+  gateway:
+    image: nginx:1.28-alpine
+    restart: unless-stopped
+    ports: ["127.0.0.1:${APP_PORT:-8080}:8080"]
+    volumes: ["./infra/nginx.conf:/etc/nginx/conf.d/default.conf:ro"]
+    depends_on:
+      web: { condition: service_healthy }
+  prometheus:
+    profiles: [observability]
+    image: prom/prometheus:v3.2.1
+    restart: unless-stopped
+    volumes:
+      [
+        "./infra/prometheus.yml:/etc/prometheus/prometheus.yml:ro",
+        prometheus-data:/prometheus,
+      ]
+    ports: ["127.0.0.1:9090:9090"]
+  grafana:
+    profiles: [observability]
+    image: grafana/grafana:11.6.0
+    restart: unless-stopped
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: ${ADMIN_PASSWORD}
+      GF_USERS_ALLOW_SIGN_UP: "false"
+    ports: ["127.0.0.1:3001:3000"]
+    volumes:
+      [
+        grafana-data:/var/lib/grafana,
+        "./infra/grafana/provisioning:/etc/grafana/provisioning:ro",
+        "./infra/grafana/dashboards:/var/lib/grafana/dashboards:ro",
+      ]
+  jaeger:
+    profiles: [observability]
+    image: jaegertracing/all-in-one:1.68.0
+    restart: unless-stopped
+    environment:
+      COLLECTOR_OTLP_ENABLED: "true"
+    ports: ["127.0.0.1:16686:16686"]
+volumes:
+  order-data:
+  inventory-data:
+  payment-data:
+  fulfillment-data:
+  redis-data:
+  kafka-data:
+  prometheus-data:
+  grafana-data:

@@ -1,0 +1,49 @@
+{
+  "name": "nexusflow",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "node scripts/setup.mjs && next dev --hostname 0.0.0.0",
+    "build": "next build --webpack && npm run build:workers",
+    "build:workers": "esbuild src/backend/worker.ts --bundle --platform=node --format=esm --packages=external --outfile=build/worker.js && esbuild src/backend/migrate-cli.ts --bundle --platform=node --format=esm --packages=external --outfile=build/migrate.js",
+    "start": "next start --hostname 0.0.0.0",
+    "worker": "tsx src/backend/worker.ts",
+    "migrate": "tsx src/backend/migrate-cli.ts",
+    "typecheck": "tsc --noEmit",
+    "test": "node --import tsx --test tests/*.test.ts",
+    "test:integration": "node --import tsx --test --test-concurrency=1 tests/integration/*.test.ts",
+    "format": "prettier --write src tests scripts README.md compose.yaml compose.test.yaml",
+    "docker:up": "node scripts/compose.mjs up -d --build",
+    "docker:down": "node scripts/compose.mjs down",
+    "test:docker": "node scripts/compose.mjs -p nexusflow-test -f compose.yaml -f compose.test.yaml up --build --abort-on-container-exit --exit-code-from tests tests",
+    "test:resilience": "node scripts/verify-resilience.mjs"
+  },
+  "dependencies": {
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0",
+    "lucide-react": "^0.468.0",
+    "next": "16.4.5",
+    "pg": "^8.16.3",
+    "ioredis": "^5.8.2",
+    "kafkajs": "^2.2.4",
+    "stripe": "23.1.0",
+    "zod": "^4.1.12",
+    "@stripe/react-stripe-js": "^5.4.1",
+    "@stripe/stripe-js": "^8.5.3",
+    "@opentelemetry/api": "^1.9.0",
+    "@opentelemetry/sdk-node": "0.300.0",
+    "@opentelemetry/exporter-trace-otlp-http": "0.300.0",
+    "pino": "^10.1.0"
+  },
+  "devDependencies": {
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0",
+    "@types/node": "^22.0.0",
+    "typescript": "~5.7.2",
+    "@types/pg": "^8.15.6",
+    "tsx": "^4.20.6",
+    "esbuild": "^0.25.12",
+    "prettier": "^3.6.2"
+  }
+}

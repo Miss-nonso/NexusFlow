@@ -1,0 +1,6 @@
+global:
+  scrape_interval: 15s
+scrape_configs:
+  - job_name: nexusflow
+    static_configs:
+      - targets: ['order-worker:4000', 'inventory-worker:4000', 'payment-worker:4000', 'fulfillment-worker:4000']

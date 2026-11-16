@@ -1,0 +1,39 @@
+services:
+  order-worker:
+    environment:
+      ALLOW_FAULT_INJECTION: "true"
+      PAYMENT_PROVIDER: mock
+  inventory-worker:
+    environment:
+      ALLOW_FAULT_INJECTION: "true"
+      PAYMENT_PROVIDER: mock
+  payment-worker:
+    environment:
+      ALLOW_FAULT_INJECTION: "true"
+      PAYMENT_PROVIDER: mock
+  fulfillment-worker:
+    environment:
+      ALLOW_FAULT_INJECTION: "true"
+      PAYMENT_PROVIDER: mock
+  web:
+    environment:
+      ALLOW_FAULT_INJECTION: "true"
+      PAYMENT_PROVIDER: mock
+  tests:
+    build:
+      context: .
+      target: test
+    profiles: [test]
+    environment:
+      NODE_ENV: test
+      SERVICE_ROLE: order
+      TEST_TARGET_APPROVED: "true"
+      PAYMENT_PROVIDER: mock
+      TEST_BASE_URL: http://web:3000
+      ADMIN_API_TOKEN: ${ADMIN_API_TOKEN}
+      DATABASE_URL: postgresql://nexusflow:${ORDER_DB_PASSWORD}@order-db:5432/nexusflow
+      INVENTORY_DATABASE_URL: postgresql://nexusflow:${INVENTORY_DB_PASSWORD}@inventory-db:5432/nexusflow
+      PAYMENT_DATABASE_URL: postgresql://nexusflow:${PAYMENT_DB_PASSWORD}@payment-db:5432/nexusflow
+      FULFILLMENT_DATABASE_URL: postgresql://nexusflow:${FULFILLMENT_DB_PASSWORD}@fulfillment-db:5432/nexusflow
+    depends_on:
+      web: { condition: service_healthy }
